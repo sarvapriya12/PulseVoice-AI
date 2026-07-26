@@ -1,0 +1,44 @@
+# Environment & API Keys
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Model Weights & Large Binaries (>100MB)
+apps/voice-server/local_model/*.onnx
+apps/voice-server/local_model/*.bin
+apps/voice-server/local_model/huggingface_cache/
+local_model/
+
+# Virtual Environments
+voice_ai_env/
+.venv/
+venv/
+env/
+ENV/
+
+# Databases & SQLite
+*.db
+*.sqlite
+*.sqlite3
+
+# Byte-compiled / Cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.ruff_cache/
+
+# Logs & Temp files
+*.log
+*_out.txt
+*.recovered.txt
+
+# OS / IDE files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo

@@ -1,0 +1,669 @@
+<!DOCTYPE html>
+<html class="scroll-smooth" lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>AeroVoice AI | High-Precision Audio Engine</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&amp;family=Geist:wght@300;400;500;600;700&amp;family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+  tailwind.config = {
+    darkMode: "class",
+    theme: {
+      extend: {
+        "colors": {
+                "outline-variant": "#bac9cc",
+                "on-tertiary-fixed-variant": "#274c57",
+                "surface-container-lowest": "#ffffff",
+                "inverse-primary": "#00daf3",
+                "surface-container-high": "#e6e8ea",
+                "secondary-fixed-dim": "#3ce36a",
+                "primary-fixed": "#9cf0ff",
+                "on-secondary-container": "#00732c",
+                "surface-variant": "#e0e3e5",
+                "on-surface": "#191c1e",
+                "tertiary": "#406370",
+                "on-secondary-fixed": "#002108",
+                "surface": "#f7f9fb",
+                "background": "#ffffff",
+                "outline": "#6b7a7d",
+                "tertiary-fixed": "#c3e8f7",
+                "secondary-container": "#5cfd80",
+                "secondary": "#006e2a",
+                "error-container": "#ffdad6",
+                "surface-bright": "#f7f9fb",
+                "on-primary-fixed-variant": "#004f58",
+                "on-error": "#ffffff",
+                "on-tertiary": "#ffffff",
+                "primary": "#006875",
+                "tertiary-fixed-dim": "#a7ccda",
+                "inverse-on-surface": "#eff1f3",
+                "inverse-surface": "#2d3133",
+                "surface-dim": "#d8dadc",
+                "on-tertiary-container": "#3a5e6a",
+                "secondary-fixed": "#69ff87",
+                "on-primary-fixed": "#001f24",
+                "surface-tint": "#006875",
+                "on-primary-container": "#00626e",
+                "surface-container-highest": "#e0e3e5",
+                "on-error-container": "#93000a",
+                "primary-container": "#00e5ff",
+                "on-primary": "#ffffff",
+                "on-secondary-fixed-variant": "#00531e",
+                "on-secondary": "#ffffff",
+                "on-background": "#191c1e",
+                "surface-container-low": "#f2f4f6",
+                "primary-fixed-dim": "#00daf3",
+                "surface-container": "#eceef0",
+                "on-tertiary-fixed": "#001f28",
+                "error": "#ba1a1a",
+                "on-surface-variant": "#3b494c",
+                "tertiary-container": "#b1d6e4"
+        },
+        "borderRadius": {
+                "DEFAULT": "0.125rem",
+                "lg": "0.25rem",
+                "xl": "0.5rem",
+                "full": "0.75rem"
+        },
+        "spacing": {
+                "base": "8px",
+                "lg": "48px",
+                "xl": "80px",
+                "container-max": "1280px",
+                "sm": "12px",
+                "xs": "4px",
+                "md": "24px",
+                "gutter": "24px",
+                "2xl": "120px",
+                "3xl": "160px"
+        },
+        "fontFamily": {
+                "code-sm": ["Geist"],
+                "body-md": ["Inter"],
+                "body-lg": ["Inter"],
+                "headline-lg": ["Geist"],
+                "headline-md": ["Geist"],
+                "display": ["Geist"],
+                "label-md": ["Geist"]
+        }
+      }
+    }
+  }
+</script>
+<style>
+    .material-symbols-outlined { font-variation-settings: 'FILL' 0, 'wght' 300, 'GRAD' 0, 'opsz' 24; }
+    .text-gradient { background: linear-gradient(45deg, #00daf3, #3ce36a); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+    .glass-card { background: rgba(255, 255, 255, 0.4); backdrop-filter: blur(12px); }
+    @keyframes fall-in { 0% { transform: translateY(-100%) rotateX(-20deg); opacity: 0; } 100% { transform: translateY(0) rotateX(0); opacity: 1; } }
+    .animate-fall { animation: fall-in 1.2s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+    .toast-show { transform: translateX(-50%) translateY(0) !important; }
+</style>
+</head>
+<body class="bg-background text-on-surface font-body-md selection:bg-primary-container/30">
+
+<!-- Navigation -->
+<nav class="fixed top-0 w-full z-50 bg-background/60 backdrop-blur-md">
+    <div class="flex justify-between items-center h-24 px-gutter max-w-container-max mx-auto">
+        <div class="font-display text-body-lg text-on-surface tracking-tight">AeroVoice AI</div>
+        <div class="hidden md:flex gap-xl">
+            <a class="text-on-surface-variant hover:text-on-surface transition-colors text-sm" href="#showcase">Showcase</a>
+            <a class="text-on-surface-variant hover:text-on-surface transition-colors text-sm" href="#technology">Technology</a>
+            <a class="text-on-surface-variant hover:text-on-surface transition-colors text-sm" href="#docs">Docs</a>
+        </div>
+        <div class="flex items-center gap-lg">
+            <button class="px-md py-sm bg-on-surface text-background text-sm rounded-full hover:bg-on-surface/90">Get Started</button>
+        </div>
+    </div>
+</nav>
+
+<!-- Warmup UI -->
+<div class="fixed top-24 w-full z-40 px-gutter pointer-events-none">
+    <div class="max-w-container-max mx-auto pt-sm">
+        <div class="glass-card max-w-[200px] ml-auto p-sm rounded-lg pointer-events-auto border border-outline-variant/10">
+            <div class="flex items-center justify-between mb-2">
+                <span class="text-[10px] font-label-md text-outline uppercase tracking-widest" id="warmup-label">Engine</span>
+                <span class="text-[10px] font-label-md text-secondary" id="warmup-percent">0%</span>
+            </div>
+            <div class="h-[2px] w-full bg-surface-container-low rounded-full overflow-hidden">
+                <div class="h-full bg-primary transition-all duration-500" id="warmup-bar" style="width: 0%"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Hero Section -->
+<header class="relative min-h-screen pt-3xl pb-2xl flex flex-col items-center justify-center overflow-hidden">
+    <div class="absolute top-0 inset-x-0 h-[500px] z-10 animate-fall pointer-events-none opacity-40"></div>
+    <div class="relative z-20 text-center px-gutter max-w-4xl mx-auto mt-2xl">
+        <h1 class="font-display text-[56px] leading-[1.1] mb-lg text-on-surface">
+            YOUR VERY OWN PERSONAL<br/><span class="italic text-gradient">ASSISTANT</span>
+        </h1>
+        <p class="font-body-lg text-body-lg text-outline mb-xl max-w-2xl mx-auto">
+            AeroVoice delivers low latency medical support with high fidelity audio processing.
+        </p>
+        <div class="flex flex-col sm:flex-row gap-lg justify-center items-center">
+            <button class="btn-connect px-xl py-md bg-on-surface text-background text-body-md rounded-full hover:scale-105 transition-transform flex items-center gap-sm">
+                <span class="material-symbols-outlined text-sm">bolt</span> Connect Now
+            </button>
+            <button class="btn-end px-xl py-md bg-error text-white text-body-md rounded-full hover:scale-105 transition-transform hidden items-center gap-sm">
+                <span class="material-symbols-outlined text-sm">call_end</span> End Call
+            </button>
+        </div>
+    </div>
+</header>
+
+<!-- Chat/Demo Section -->
+<section class="py-3xl px-gutter max-w-container-max mx-auto" id="showcase">
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-3xl items-center">
+        <div>
+            <span class="material-symbols-outlined text-primary text-3xl mb-md block">graphic_eq</span>
+            <h3 class="font-headline-lg text-[36px] mb-md text-on-surface">24kHz Audio Pipeline</h3>
+            <p class="text-outline max-w-md font-body-lg">Lossless 16-bit PCM resampling ensures every inflection is captured. We don't just process speech; we preserve soul.</p>
+        </div>
+        <div class="flex flex-col gap-sm w-full">
+            <div id="transcript" class="space-y-sm pr-sm h-[500px] overflow-y-auto scroll-smooth border border-outline-variant/60 rounded-lg p-sm glass-card flex flex-col gap-2">
+                <div class="text-[10px] text-center text-outline uppercase tracking-widest">— waiting for connection —</div>
+            </div>
+            <div class="mt-lg">
+                <div class="flex items-center gap-md border rounded-lg border-outline-variant/70 px-md py-sm">
+                    <button
+                        id="chat-mic-btn"
+                        class="material-symbols-outlined text-outline hover:text-primary transition-colors focus:outline-none flex items-center justify-center">
+                        mic
+                    </button>
+
+                    <input
+                        id="chat-text"
+                        class="bg-transparent border-none focus:ring-0 flex-1 text-body-lg font-light text-on-surface outline-none"
+                        placeholder="Speak or type..."
+                        type="text"
+                    />
+
+                    <button
+                        id="btn-send-chat"
+                        class="text-primary hover:text-primary-fixed transition-colors flex items-center justify-center">
+                        <span class="material-symbols-outlined">send</span>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- Document Manager -->
+<section class="py-xl bg-surface-container-low" id="docs">
+    <div class="max-w-container-max mx-auto px-gutter">
+        <div class="flex flex-col md:flex-row justify-between items-end mb-lg gap-md border-b border-outline-variant/20 pb-sm">
+            <div>
+                <h2 class="font-headline-md text-[24px] text-on-surface leading-none">Document Manager</h2>
+                <p class="text-outline text-xs mt-xs">Aero Brain Context</p>
+            </div>
+            <div class="flex gap-md">
+                <input type="file" id="pdf-upload" accept=".pdf,.txt,.md,.docx" style="display:none">
+                <button onclick="document.getElementById('pdf-upload').click()" class="text-outline hover:text-on-surface transition-colors text-sm flex items-center gap-xs">
+                    <span class="material-symbols-outlined text-sm">upload_file</span> Upload
+                </button>
+                <button id="btn-sync" onclick="rebuildIndex()" class="text-primary hover:text-primary-fixed transition-colors text-sm flex items-center gap-xs">
+                    <span class="material-symbols-outlined text-sm">sync</span> Rebuild
+                </button>
+            </div>
+        </div>
+        <div class="bg-background rounded-lg border border-outline-variant/20 overflow-hidden">
+            <table class="w-full text-left">
+                <thead class="text-[10px] font-label-md text-outline uppercase tracking-widest bg-surface-container-low border-b border-outline-variant/20">
+                    <tr><th class="py-xs px-sm font-normal">Document Name</th><th class="py-xs px-sm font-normal text-right">Action</th></tr>
+                </thead>
+                <tbody class="text-sm" id="doc-list">
+                    <!-- Dynamically injected -->
+                </tbody>
+            </table>
+        </div>
+    </div>
+</section>
+
+<!-- Floating Status Bar -->
+<div class="fixed bottom-xl inset-x-0 z-[60] px-gutter pointer-events-none">
+    <div class="max-w-md mx-auto glass-card rounded-full py-sm px-lg flex items-center justify-center gap-lg border border-outline-variant/20 shadow-lg pointer-events-auto">
+        <button id="live-mic-icon" class="material-symbols-outlined text-outline text-sm hover:text-white transition-colors cursor-pointer" title="Toggle Mute">mic_off</button>
+        <p class="text-sm text-outline font-light whitespace-nowrap tracking-wide" id="live-transcript">Disconnected</p>
+        
+        <div class="flex flex-col sm:flex-row gap-sm justify-center items-center">
+            <button
+                class="btn-connect px-md py-xs bg-on-surface text-background text-sm rounded-full hover:scale-105 transition-transform flex items-center gap-xs"
+                style="pointer-events: auto; opacity: 1;"
+            >
+                <span class="material-symbols-outlined text-base">bolt</span>
+                Connect
+            </button>
+
+            <button
+                class="btn-end px-md py-xs bg-error text-white text-sm rounded-full hover:scale-105 transition-transform flex items-center gap-xs hidden"
+                style="display: none;"
+            >
+                <span class="material-symbols-outlined text-base">call_end</span>
+                End
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- Toast -->
+<div id="toast" class="fixed bottom-32 left-1/2 -translate-x-1/2 bg-inverse-surface text-inverse-on-surface px-lg py-sm rounded-lg shadow-lg font-body-md text-sm z-[100] transition-transform duration-300 translate-y-[300px]"></div>
+
+<script>
+// --- Toast ---
+const toast = document.getElementById('toast');
+let toastT = null;
+function showToast(msg) {
+    toast.textContent = msg;
+    toast.classList.add('toast-show');
+    clearTimeout(toastT);
+    toastT = setTimeout(() => toast.classList.remove('toast-show'), 3500);
+}
+
+// --- Warmup Poller ---
+const warmupBar = document.getElementById('warmup-bar');
+const warmupPercent = document.getElementById('warmup-percent');
+const warmupLabel = document.getElementById('warmup-label');
+const connectBtns = document.querySelectorAll('.btn-connect');
+const endBtns = document.querySelectorAll('.btn-end');
+
+connectBtns.forEach(btn => {
+    btn.style.pointerEvents = 'none';
+    btn.style.opacity = '0.5';
+});
+
+let fakeProgress = 5;
+const progressTimer = setInterval(() => {
+    if (fakeProgress < 90) {
+        fakeProgress += Math.random() * 8 + 2;
+        if (fakeProgress > 90) fakeProgress = 90;
+        warmupBar.style.width = fakeProgress + '%';
+        warmupPercent.innerText = Math.floor(fakeProgress) + '%';
+    }
+}, 800);
+
+const warmupPoller = setInterval(async () => {
+    try {
+        const res = await fetch('/warmup-status');
+        if (res.ok) {
+            const data = await res.json();
+            if (data.ready) {
+                clearInterval(warmupPoller);
+                clearInterval(progressTimer);
+                warmupBar.style.width = '100%';
+                warmupPercent.innerText = 'ONLINE';
+                warmupPercent.classList.add('text-primary');
+                warmupLabel.innerText = 'READY';
+                connectBtns.forEach(btn => {
+                    btn.style.pointerEvents = 'auto';
+                    btn.style.opacity = '1';
+                });
+                setTimeout(() => { warmupBar.parentElement.parentElement.style.opacity = '0'; }, 2000);
+            }
+        }
+    } catch(e) {}
+}, 500);
+
+// --- Audio Codecs ---
+function floatTo16BitPCM(f32) {
+    const out = new Int16Array(f32.length);
+    for (let i = 0; i < f32.length; i++) {
+        const s = Math.max(-1, Math.min(1, f32[i]));
+        out[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+    }
+    return out;
+}
+function decode16BitPCM(b64) {
+    const s = atob(b64);
+    const u8 = new Uint8Array(s.length);
+    for (let i = 0; i < s.length; i++) u8[i] = s.charCodeAt(i);
+    const i16 = new Int16Array(u8.buffer);
+    const f32 = new Float32Array(i16.length);
+    for (let i = 0; i < i16.length; i++) f32[i] = i16[i] / 32768.0;
+    return f32;
+}
+function toB64(i16){
+    const u8 = new Uint8Array(i16.buffer);
+    let s = '';
+    for(let i = 0; i < u8.length; i++) s += String.fromCharCode(u8[i]);
+    return btoa(s);
+}
+
+// --- WebSocket State ---
+let ws = null, inCtx = null, outCtx = null, mediaStream = null, processor = null;
+let nextPlayTime = 0, isConnected = false, isMuted = false;
+const liveStatus = document.getElementById('live-transcript');
+const liveMicIcon = document.getElementById('live-mic-icon');
+const chatMicBtn = document.getElementById('chat-mic-btn');
+const transcriptBox = document.getElementById('transcript');
+
+function setStatus(text) {
+    if (text === "Thinking...") {
+        liveStatus.innerHTML = `<span class="material-symbols-outlined text-[10px] animate-spin inline-block mr-1">sync</span> ${text}`;
+    } else {
+        liveStatus.innerText = text;
+    }
+}
+
+function toggleMute() {
+    if (!isConnected) return;
+    isMuted = !isMuted;
+    if (isMuted) {
+        liveMicIcon.innerText = 'mic_off';
+        liveMicIcon.classList.add('text-error');
+        liveMicIcon.classList.remove('text-primary');
+        
+        chatMicBtn.innerText = 'mic_off';
+        chatMicBtn.classList.add('text-error');
+        chatMicBtn.classList.remove('text-outline');
+
+        addBubble('system', '— Microphone Muted —');
+    } else {
+        liveMicIcon.innerText = 'mic';
+        liveMicIcon.classList.remove('text-error');
+        liveMicIcon.classList.add('text-primary');
+        
+        chatMicBtn.innerText = 'mic';
+        chatMicBtn.classList.remove('text-error');
+        chatMicBtn.classList.add('text-outline');
+
+        addBubble('system', '— Microphone Unmuted —');
+    }
+}
+
+liveMicIcon.addEventListener('click', toggleMute);
+chatMicBtn.addEventListener('click', toggleMute);
+
+function ensureOutCtx() {
+    if (!outCtx || outCtx.state === 'closed') {
+        outCtx = new (window.AudioContext || window.webkitAudioContext)();
+        nextPlayTime = 0;
+    }
+    if (outCtx.state === 'suspended') outCtx.resume();
+}
+
+function playPCMChunk(b64) {
+    ensureOutCtx();
+    const f32 = decode16BitPCM(b64);
+    const nativeRate = outCtx.sampleRate;
+    const srcRate = 24000;
+    const srcLen = f32.length;
+    const dstLen = Math.ceil(srcLen * nativeRate / srcRate);
+    
+    const resampled = new Float32Array(dstLen);
+    for (let i = 0; i < dstLen; i++) {
+        const pos = i * srcRate / nativeRate;
+        const lo = Math.floor(pos);
+        const hi = Math.min(lo + 1, srcLen - 1);
+        const t = pos - lo;
+        resampled[i] = f32[lo] * (1 - t) + f32[hi] * t;
+    }
+    
+    const buf = outCtx.createBuffer(1, dstLen, nativeRate);
+    buf.getChannelData(0).set(resampled);
+    const src = outCtx.createBufferSource();
+    src.buffer = buf;
+    src.connect(outCtx.destination);
+    
+    const now = outCtx.currentTime;
+    if (nextPlayTime < now) nextPlayTime = now + 0.05;
+    src.start(nextPlayTime);
+    nextPlayTime += buf.duration;
+}
+
+let currentInterimBubble = null;
+let currentAiBubble = null;
+function addBubble(role, text, isFinal = true) {
+    if (role === 'user' && !isFinal) {
+        if (!currentInterimBubble) {
+            currentInterimBubble = document.createElement('div');
+            currentInterimBubble.className = "max-w-[80%] ml-auto text-right text-outline italic animate-pulse";
+            transcriptBox.appendChild(currentInterimBubble);
+        }
+        currentInterimBubble.innerHTML = `<p class="text-sm bg-surface-container-low px-3 py-2 rounded-lg inline-block">${text}</p>`;
+        transcriptBox.scrollTop = transcriptBox.scrollHeight;
+        return;
+    }
+    if (role === 'user' && isFinal && currentInterimBubble) {
+        currentInterimBubble.className = "max-w-[80%] ml-auto text-right text-on-surface";
+        currentInterimBubble.innerHTML = `<p class="text-sm bg-primary/10 text-primary px-3 py-2 rounded-lg inline-block">${text}</p>`;
+        currentInterimBubble = null;
+        transcriptBox.scrollTop = transcriptBox.scrollHeight;
+        return;
+    }
+
+    if (role === 'ai') {
+        if (!currentAiBubble) {
+            currentAiBubble = document.createElement('div');
+            currentAiBubble.className = "max-w-[80%] mr-auto border-l-2 border-primary pl-4 mb-2";
+            currentAiBubble.innerHTML = `
+                <p class="text-[10px] font-label-md text-primary mb-1 uppercase tracking-widest">AeroVoice AI</p>
+                <p class="text-body-lg text-on-surface leading-relaxed ai-text-content"></p>
+            `;
+            transcriptBox.appendChild(currentAiBubble);
+        }
+        
+        const p = currentAiBubble.querySelector('.ai-text-content');
+        if (!isFinal) {
+            // Append streaming chunk
+            p.appendChild(document.createTextNode(text));
+        } else {
+            // Final message with tool usage tags etc.
+            p.innerText = text;
+            currentAiBubble = null;
+        }
+        transcriptBox.scrollTop = transcriptBox.scrollHeight;
+        return;
+    }
+
+    const d = document.createElement('div');
+    if (role === 'user') {
+        d.className = "max-w-[80%] ml-auto text-right text-on-surface";
+        d.innerHTML = `<p class="text-sm bg-primary/10 text-primary px-3 py-2 rounded-lg inline-block">${text}</p>`;
+    } else {
+        d.className = "text-center w-full";
+        d.innerHTML = `<span class="text-[10px] uppercase tracking-widest text-outline">${text}</span>`;
+    }
+    transcriptBox.appendChild(d);
+    transcriptBox.scrollTop = transcriptBox.scrollHeight;
+}
+
+async function connect() {
+    if (isConnected) return;
+    connectBtns.forEach(btn => btn.style.pointerEvents = 'none');
+    setStatus("Connecting...", "hourglass_empty");
+
+    try {
+        const res = await fetch('/dev-token');
+        if (!res.ok) throw new Error('Token fetch failed');
+        const { token, stream_sid } = await res.json();
+        
+        const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+        ws = new WebSocket(`${proto}//${location.host}/ws?token=${token}`);
+        
+        ws.onopen = async () => {
+            try {
+                ws.send(JSON.stringify({ event: 'start', start: { streamSid: stream_sid, callSid: stream_sid } }));
+                inCtx = new (window.AudioContext || window.webkitAudioContext)();
+                if (inCtx.state === 'suspended') await inCtx.resume();
+                ensureOutCtx();
+                
+                let constraints = { audio: true };
+                mediaStream = await navigator.mediaDevices.getUserMedia(constraints).catch(() => navigator.mediaDevices.getUserMedia({ audio: true }));
+                
+                isConnected = true;
+                connectBtns.forEach(btn => btn.classList.add('hidden'));
+                endBtns.forEach(btn => {
+                    btn.classList.remove('hidden');
+                    btn.style.display = 'flex';
+                });
+                
+                transcriptBox.innerHTML = '';
+                addBubble('system', '— Secure WebSocket Established —');
+                setStatus("Listening");
+                isMuted = false;
+                liveMicIcon.innerText = 'mic';
+                liveMicIcon.className = "material-symbols-outlined text-primary text-sm hover:text-white transition-colors cursor-pointer";
+                chatMicBtn.innerText = 'mic';
+                chatMicBtn.className = "material-symbols-outlined text-outline hover:text-primary transition-colors focus:outline-none";
+
+                const source = inCtx.createMediaStreamSource(mediaStream);
+                processor = inCtx.createScriptProcessor(4096, 1, 1);
+                source.connect(processor);
+                processor.connect(inCtx.destination);
+                
+                const TARGET_RATE = 24000;
+                processor.onaudioprocess = (e) => {
+                    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+                    const native = e.inputBuffer.getChannelData(0);
+                    const nativeRate = inCtx.sampleRate;
+                    const ratio = nativeRate / TARGET_RATE;
+                    const outLen = Math.round(native.length / ratio);
+                    const f32 = new Float32Array(outLen);
+                    for (let i = 0; i < outLen; i++) {
+                        const pos = i * ratio;
+                        const lo = Math.floor(pos);
+                        const hi = Math.min(lo + 1, native.length - 1);
+                        f32[i] = native[lo] * (1 - (pos - lo)) + native[hi] * (pos - lo);
+                    }
+                    if (!isMuted) {
+                        ws.send(JSON.stringify({ event: 'media', streamSid: stream_sid, media: { payload: toB64(floatTo16BitPCM(f32)) } }));
+                    }
+                };
+            } catch (err) {
+                showToast("Mic Error: " + err.message);
+                cleanup();
+            }
+        };
+
+        ws.onmessage = (ev) => {
+            let msg;
+            try { msg = JSON.parse(ev.data); } catch { return; }
+            if (msg.event === 'transcript') {
+                addBubble(msg.role, msg.text, msg.isFinal !== false);
+                if (msg.role === 'ai') setStatus("Speaking");
+            }
+            if (msg.event === 'media' && msg.media?.payload) {
+                setStatus("Speaking");
+                playPCMChunk(msg.media.payload);
+            }
+        };
+        ws.onclose = cleanup;
+        ws.onerror = cleanup;
+    } catch (err) {
+        showToast(err.message);
+        cleanup();
+    }
+}
+
+function cleanup() {
+    isConnected = false;
+    if (ws) { try { ws.close(); } catch(e){} ws = null; }
+    if (processor) { processor.disconnect(); processor = null; }
+    if (inCtx) { inCtx.close(); inCtx = null; }
+    if (outCtx) { outCtx.close(); outCtx = null; }
+    if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
+    
+    endBtns.forEach(btn => {
+        btn.classList.add('hidden');
+        btn.style.display = 'none';
+    });
+    connectBtns.forEach(btn => {
+        btn.classList.remove('hidden');
+        btn.style.pointerEvents = 'auto';
+    });
+    setStatus("Disconnected");
+    liveMicIcon.innerText = 'mic_off';
+    liveMicIcon.className = "material-symbols-outlined text-outline text-sm hover:text-white transition-colors cursor-pointer";
+    chatMicBtn.innerText = 'mic';
+    chatMicBtn.className = "material-symbols-outlined text-outline hover:text-primary transition-colors focus:outline-none";
+    addBubble('system', '— Call Ended —');
+}
+
+connectBtns.forEach(btn => btn.addEventListener('click', connect));
+endBtns.forEach(btn => btn.addEventListener('click', cleanup));
+
+// --- Chat Input ---
+const chatText = document.getElementById('chat-text');
+const btnSendChat = document.getElementById('btn-send-chat');
+function sendChat() {
+    const text = chatText.value.trim();
+    if (!text || !ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({ event: "chat", text: text }));
+    addBubble('user', text, true);
+    chatText.value = '';
+}
+btnSendChat.onclick = sendChat;
+chatText.onkeypress = (e) => { if (e.key === 'Enter') sendChat(); };
+
+// --- Document Manager ---
+const docList = document.getElementById('doc-list');
+const pdfUpload = document.getElementById('pdf-upload');
+
+async function fetchDocs() {
+    try {
+        const res = await fetch('/api/admin/docs');
+        const data = await res.json();
+        docList.innerHTML = '';
+        if (data.documents.length === 0) {
+            docList.innerHTML = '<tr><td colspan="2" class="py-md text-outline">No documents found.</td></tr>';
+            return;
+        }
+        data.documents.forEach(doc => {
+            const tr = document.createElement('tr');
+            tr.className = "border-b border-outline-variant/10 hover:bg-surface-container-lowest/50 transition-colors";
+            tr.innerHTML = `
+                <td class="py-sm px-sm text-on-surface text-xs"><span class="text-outline mr-2">📄</span>${doc}</td>
+                <td class="py-sm px-sm text-right">
+                    <button onclick="deleteDoc('${doc}')" class="text-error hover:text-red-400 text-[10px] tracking-widest uppercase border border-error/50 hover:border-error px-2 py-0.5 rounded transition-colors">Delete</button>
+                </td>
+            `;
+            docList.appendChild(tr);
+        });
+    } catch(e) { showToast('Failed to load docs'); }
+}
+
+pdfUpload.addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const formData = new FormData();
+    formData.append('file', file);
+    showToast('Uploading...');
+    try {
+        const res = await fetch('/api/admin/docs', { method: 'POST', body: formData });
+        if (res.ok) { showToast('Uploaded successfully! Remember to sync.'); fetchDocs(); }
+        else { const err = await res.json(); showToast('Upload failed: ' + err.detail); }
+    } catch(e) { showToast('Upload error'); }
+    pdfUpload.value = '';
+});
+
+async function deleteDoc(filename) {
+    if (!confirm(`Delete ${filename}?`)) return;
+    showToast('Deleting...');
+    try {
+        const res = await fetch(`/api/admin/docs/${filename}`, { method: 'DELETE' });
+        if (res.ok) { showToast('Deleted successfully! Remember to sync.'); fetchDocs(); }
+        else showToast('Delete failed');
+    } catch(e) { showToast('Delete error'); }
+}
+
+async function rebuildIndex() {
+    const btn = document.getElementById('btn-sync');
+    btn.innerHTML = `<span class="material-symbols-outlined text-sm animate-spin">sync</span> Syncing...`;
+    btn.style.pointerEvents = 'none';
+    showToast('Rebuilding Brain Index...');
+    try {
+        const res = await fetch('/api/admin/rebuild-index', { method: 'POST' });
+        if (res.ok) showToast('Brain successfully synchronized and hot-loaded!');
+        else { const err = await res.json(); showToast('Sync failed: ' + err.detail); }
+    } catch(e) { showToast('Sync error'); }
+    btn.innerHTML = `<span class="material-symbols-outlined text-sm">sync</span> Rebuild`;
+    btn.style.pointerEvents = 'auto';
+}
+
+fetchDocs();
+</script>
+</body>
+</html>
