@@ -157,9 +157,28 @@
 <section class="py-3xl px-gutter max-w-container-max mx-auto" id="showcase">
     <div class="grid grid-cols-1 md:grid-cols-2 gap-3xl items-center">
         <div>
-            <span class="material-symbols-outlined text-primary text-3xl mb-md block">graphic_eq</span>
-            <h3 class="font-headline-lg text-[36px] mb-md text-on-surface">24kHz Audio Pipeline</h3>
-            <p class="text-outline max-w-md font-body-lg">Lossless 16-bit PCM resampling ensures every inflection is captured. We don't just process speech; we preserve soul.</p>
+            <div class="mb-md">
+                <span class="material-symbols-outlined text-primary text-3xl mb-xs block">graphic_eq</span>
+                <h3 class="font-headline-lg text-[32px] text-on-surface">Interactive AI Avatar</h3>
+                <p class="text-outline max-w-md font-body-lg text-sm">Real-time speech-to-speech with full-duplex interruption handling and conversational persona.</p>
+            </div>
+            
+            <!-- AI Avatar Viewport -->
+            <div id="avatar-container" class="relative w-full max-w-md mx-auto aspect-video rounded-2xl overflow-hidden border border-outline-variant/30 glass-card shadow-2xl flex items-center justify-center bg-surface-container-low">
+                <!-- Live WebRTC Tavus stream iframe -->
+                <iframe id="avatar-frame" class="hidden absolute inset-0 w-full h-full border-0" allow="camera; microphone; autoplay; display-capture"></iframe>
+                
+                <!-- Interactive AI Persona Visualizer -->
+                <div id="avatar-visualizer" class="flex flex-col items-center justify-center p-md text-center transition-all duration-300">
+                    <div id="avatar-glow" class="relative w-28 h-28 rounded-full border-2 border-primary/40 flex items-center justify-center transition-all duration-300 shadow-[0_0_25px_rgba(0,218,243,0.2)]">
+                        <div id="avatar-pulse" class="w-20 h-20 rounded-full bg-gradient-to-tr from-primary to-secondary-container flex items-center justify-center shadow-lg transition-transform duration-150">
+                            <span class="material-symbols-outlined text-background text-3xl">smart_toy</span>
+                        </div>
+                    </div>
+                    <h4 class="mt-md font-display text-sm font-medium tracking-wide text-on-surface">Sarah — Medical Receptionist</h4>
+                    <p id="avatar-status-text" class="text-xs text-outline mt-xs font-light">Standby (Press Connect)</p>
+                </div>
+            </div>
         </div>
         <div class="flex flex-col gap-sm w-full">
             <div id="transcript" class="space-y-sm pr-sm h-[500px] overflow-y-auto scroll-smooth border border-outline-variant/60 rounded-lg p-sm glass-card flex flex-col gap-2">
@@ -384,6 +403,51 @@ function ensureOutCtx() {
     if (outCtx.state === 'suspended') outCtx.resume();
 }
 
+let activeAudioSources = [];
+
+function stopAllAudioPlayback() {
+    activeAudioSources.forEach(src => {
+        try { src.stop(); } catch(e){}
+    });
+    activeAudioSources = [];
+    if (outCtx) {
+        nextPlayTime = outCtx.currentTime;
+    }
+    setAvatarSpeaking(false);
+}
+
+function setAvatarSpeaking(isSpeaking) {
+    const avatarGlow = document.getElementById('avatar-glow');
+    const avatarPulse = document.getElementById('avatar-pulse');
+    const avatarStatusText = document.getElementById('avatar-status-text');
+    if (!avatarGlow || !avatarPulse || !avatarStatusText) return;
+
+    if (isSpeaking) {
+        avatarGlow.classList.add('border-primary', 'shadow-[0_0_35px_rgba(0,218,243,0.6)]');
+        avatarGlow.classList.remove('border-primary/40');
+        avatarPulse.classList.add('scale-110');
+        avatarStatusText.innerText = "Speaking...";
+        avatarStatusText.className = "text-xs text-primary font-medium mt-xs";
+    } else {
+        avatarGlow.classList.remove('border-primary', 'shadow-[0_0_35px_rgba(0,218,243,0.6)]');
+        avatarGlow.classList.add('border-primary/40');
+        avatarPulse.classList.remove('scale-110');
+        avatarStatusText.innerText = isConnected ? "Listening..." : "Standby (Press Connect)";
+        avatarStatusText.className = "text-xs text-outline mt-xs font-light";
+    }
+}
+
+function loadAvatarVideo(url) {
+    const avatarFrame = document.getElementById('avatar-frame');
+    const avatarVisualizer = document.getElementById('avatar-visualizer');
+    if (avatarFrame && url) {
+        avatarFrame.src = url;
+        avatarFrame.classList.remove('hidden');
+        if (avatarVisualizer) avatarVisualizer.classList.add('hidden');
+        console.log("[AVATAR] Tavus WebRTC stream connected:", url);
+    }
+}
+
 function playPCMChunk(b64) {
     ensureOutCtx();
     const f32 = decode16BitPCM(b64);
@@ -407,10 +471,21 @@ function playPCMChunk(b64) {
     src.buffer = buf;
     src.connect(outCtx.destination);
     
+    activeAudioSources.push(src);
+    src.onended = () => {
+        const idx = activeAudioSources.indexOf(src);
+        if (idx !== -1) activeAudioSources.splice(idx, 1);
+        if (activeAudioSources.length === 0 && isConnected) {
+            setStatus("Listening");
+            setAvatarSpeaking(false);
+        }
+    };
+
     const now = outCtx.currentTime;
     if (nextPlayTime < now) nextPlayTime = now + 0.05;
     src.start(nextPlayTime);
     nextPlayTime += buf.duration;
+    setAvatarSpeaking(true);
 }
 
 let currentInterimBubble = null;
@@ -481,12 +556,12 @@ async function connect() {
         const { token, stream_sid } = await res.json();
         
         const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-        ws = new WebSocket(`${proto}//${location.host}/ws?token=${token}`);
+        ws = new WebSocket(`${proto}//${location.host}/ws?token=${token}&sample_rate=24000`);
         
         ws.onopen = async () => {
             try {
                 ws.send(JSON.stringify({ event: 'start', start: { streamSid: stream_sid, callSid: stream_sid } }));
-                inCtx = new (window.AudioContext || window.webkitAudioContext)();
+                inCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
                 if (inCtx.state === 'suspended') await inCtx.resume();
                 ensureOutCtx();
                 
@@ -501,7 +576,7 @@ async function connect() {
                 });
                 
                 transcriptBox.innerHTML = '';
-                addBubble('system', '— Secure WebSocket Established —');
+                addBubble('system', '— Secure WebSocket Established (24 kHz Hi-Fi) —');
                 setStatus("Listening");
                 isMuted = false;
                 liveMicIcon.innerText = 'mic';
@@ -518,18 +593,36 @@ async function connect() {
                 processor.onaudioprocess = (e) => {
                     if (!ws || ws.readyState !== WebSocket.OPEN) return;
                     const native = e.inputBuffer.getChannelData(0);
+
+                    // --- Instant Full-Duplex Client Barge-in Detection ---
+                    let sum = 0;
+                    for (let i = 0; i < native.length; i++) {
+                        sum += native[i] * native[i];
+                    }
+                    const rms = Math.sqrt(sum / native.length);
+                    if (rms > 0.035 && activeAudioSources.length > 0 && !isMuted) {
+                        console.log("[BARGE-IN] User speech detected during bot output — cutting audio immediately.");
+                        stopAllAudioPlayback();
+                        ws.send(JSON.stringify({ event: 'interruption' }));
+                    }
+
                     const nativeRate = inCtx.sampleRate;
-                    const ratio = nativeRate / TARGET_RATE;
-                    const outLen = Math.round(native.length / ratio);
-                    const f32 = new Float32Array(outLen);
-                    for (let i = 0; i < outLen; i++) {
-                        const pos = i * ratio;
-                        const lo = Math.floor(pos);
-                        const hi = Math.min(lo + 1, native.length - 1);
-                        f32[i] = native[lo] * (1 - (pos - lo)) + native[hi] * (pos - lo);
+                    let f32;
+                    if (nativeRate === TARGET_RATE) {
+                        f32 = native;
+                    } else {
+                        const ratio = nativeRate / TARGET_RATE;
+                        const outLen = Math.round(native.length / ratio);
+                        f32 = new Float32Array(outLen);
+                        for (let i = 0; i < outLen; i++) {
+                            const pos = i * ratio;
+                            const lo = Math.floor(pos);
+                            const hi = Math.min(lo + 1, native.length - 1);
+                            f32[i] = native[lo] * (1 - (pos - lo)) + native[hi] * (pos - lo);
+                        }
                     }
                     if (!isMuted) {
-                        ws.send(JSON.stringify({ event: 'media', streamSid: stream_sid, media: { payload: toB64(floatTo16BitPCM(f32)) } }));
+                        ws.send(JSON.stringify({ event: 'media', streamSid: stream_sid, media: { payload: toB64(floatTo16BitPCM(f32)), sampleRate: 24000 } }));
                     }
                 };
             } catch (err) {
@@ -541,6 +634,16 @@ async function connect() {
         ws.onmessage = (ev) => {
             let msg;
             try { msg = JSON.parse(ev.data); } catch { return; }
+            if (msg.event === 'interruption' || msg.event === 'clear') {
+                console.log("[INTERRUPTION] Server signaled interruption — flushing audio.");
+                stopAllAudioPlayback();
+                setStatus("Listening");
+                return;
+            }
+            if (msg.event === 'avatar_ready' && msg.url) {
+                loadAvatarVideo(msg.url);
+                return;
+            }
             if (msg.event === 'transcript') {
                 addBubble(msg.role, msg.text, msg.isFinal !== false);
                 if (msg.role === 'ai') setStatus("Speaking");
@@ -560,11 +663,18 @@ async function connect() {
 
 function cleanup() {
     isConnected = false;
+    stopAllAudioPlayback();
     if (ws) { try { ws.close(); } catch(e){} ws = null; }
     if (processor) { processor.disconnect(); processor = null; }
     if (inCtx) { inCtx.close(); inCtx = null; }
     if (outCtx) { outCtx.close(); outCtx = null; }
     if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
+
+    const avatarFrame = document.getElementById('avatar-frame');
+    const avatarVisualizer = document.getElementById('avatar-visualizer');
+    if (avatarFrame) { avatarFrame.src = ''; avatarFrame.classList.add('hidden'); }
+    if (avatarVisualizer) avatarVisualizer.classList.remove('hidden');
+    setAvatarSpeaking(false);
     
     endBtns.forEach(btn => {
         btn.classList.add('hidden');

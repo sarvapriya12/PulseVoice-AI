@@ -1,26 +1,49 @@
 import os
+import time
 from langchain_community.vectorstores import FAISS
 from langchain_community.retrievers import BM25Retriever
-from langchain_huggingface import HuggingFaceEmbeddings
 from core.config import settings
+from services.rag.embedder import _load_embeddings_singleton
+from services.rag.semantic_router import route_query
 
-def _get_embeddings():
-    return HuggingFaceEmbeddings(model_name=settings.EMBEDDING_MODEL)
+# Static Core Clinic Vitals for Instant Tier 0 resolution
+CORE_VITALS_SNIPPET = (
+    "Dr. Smith's Clinic Vitals:\n"
+    "- Address: 123 Health Way, Austin, TX 78701\n"
+    "- Phone: (512) 555-0199\n"
+    "- Hours: Monday - Friday, 9:00 AM - 5:00 PM. Closed on weekends and federal holidays.\n"
+    "- Accepted Insurance: BlueCross, Aetna, Medicare, UnitedHealthcare. (Medicaid is NOT accepted).\n"
+    "- Cancellation Policy: Minimum 24 hours advance notice required, or a $50 late fee applies.\n"
+    "- Payment: Co-pays due at visit (Credit card, debit card, Apple Pay)."
+)
+
+
+_get_embeddings = _load_embeddings_singleton
+
+
+def _extract_content(doc) -> str:
+    meta = getattr(doc, "metadata", None)
+    if isinstance(meta, dict):
+        ctx = meta.get("window_context")
+        if ctx and isinstance(ctx, str):
+            return ctx
+    content = getattr(doc, "page_content", "")
+    return str(content)
+
+
+def _extract_source(doc) -> str:
+    meta = getattr(doc, "metadata", None)
+    if isinstance(meta, dict):
+        src = meta.get("source_file")
+        if src and isinstance(src, str):
+            return src
+    return "clinic_knowledge"
+
 
 class FAQRetriever:
     def __init__(self, index_path: str = "data/faiss_index"):
-        """
-        Initialize the FAQRetriever.
-        
-        Args:
-            index_path (str): The path to the FAISS index.
-            
-        Note:
-            allow_dangerous_deserialization=True is required for loading local FAISS indexes.
-            For BM25, we grab the docs directly from the FAISS docstore for testing purposes.
-        """
         self.index_path = index_path
-        self.embeddings = _get_embeddings()
+        self.embeddings = _get_embeddings(settings.EMBEDDING_MODEL)
         
         self._cache: dict[str, tuple[list, float]] = {}
         self._cache_ttl = 300  # 5 minutes
@@ -56,7 +79,6 @@ class FAQRetriever:
         
     def reload_index(self):
         """Hot-reload the FAISS database and BM25 index from disk without restarting."""
-        import os
         if not os.path.exists(self.index_path):
             print(f"Warning: Cannot reload, index path {self.index_path} does not exist.")
             return
@@ -73,7 +95,6 @@ class FAQRetriever:
 
     def search_faq_docs(self, query: str, top_k: int = 3) -> list:
         """Returns Document objects with metadata, for prefetching."""
-        import time
         key = query.lower().strip()
         
         if key in self._cache:
@@ -86,15 +107,16 @@ class FAQRetriever:
         bm25_docs = self.bm25_retriever.invoke(query)[:15] if self.bm25_retriever else []
         seen = {}
         for doc in faiss_docs + bm25_docs:
-            if doc.page_content not in seen:
-                seen[doc.page_content] = doc
+            content_key = _extract_content(doc)
+            if content_key not in seen:
+                seen[content_key] = doc
         combined = list(seen.values())
         if not combined:
             return []
         
         if self.reranker:
             MIN_SCORE = 0.3
-            pairs = [[query, d.page_content] for d in combined]
+            pairs = [[query, _extract_content(d)] for d in combined]
             scores = self.reranker.predict(pairs)
             
             doc_scores = list(zip(combined, scores))
@@ -117,31 +139,30 @@ class FAQRetriever:
 
     def search_faq(self, query: str, top_k: int = 3) -> str:
         """
-        Search the FAQ knowledge base for a given query.
-        
-        This method uses a two-stage retrieval process:
-        Stage 1: The Broad Net - Grabs top 15 results from FAISS and BM25, combines them, and removes duplicates.
-        Stage 2: The Sniper (Cross-Encoder) - Uses a cross-encoder model to score query-document pairs 
-                 and returns the absolute best `top_k` documents. Falls back to combined results if the reranker fails.
-                 
-        Args:
-            query (str): The search query.
-            top_k (int): The number of top documents to return. Default is 3.
-            
-        Returns:
-            str: A concatenated string of the best documents, or an error message.
+        Fast Tiered Search:
+        Tier 0: Semantic Router checks for core clinic vitals (hours/location) or chitchat -> instant answer.
+        Tier 1: Semantic Cache hit -> sub-millisecond answer.
+        Tier 2: Sentence-Window hybrid search (FAISS + BM25 + optional Cross-Encoder reranker).
         """
         try:
+            # ── Fast Semantic Router Check (<8ms) ──────────────────────────
+            route, confidence = route_query(query)
+            if route == "core_vitals" and confidence >= 0.58:
+                print(f"[ROUTER] Instant Tier 0 resolution for '{query}' (score={confidence:.2f})")
+                return CORE_VITALS_SNIPPET
+
+            if route == "chitchat" and confidence >= 0.65:
+                return "No clinic knowledge lookup required for conversational pleasantries."
+
+            # ── Hybrid Retrieval with Small-to-Big Sentence Window ─────────
             faiss_docs = self.faiss_db.similarity_search(query, k=15)
-            
-            bm25_docs = []
-            if self.bm25_retriever:
-                bm25_docs = self.bm25_retriever.invoke(query)[:15]
+            bm25_docs = self.bm25_retriever.invoke(query)[:15] if self.bm25_retriever else []
                 
             seen = {}
             for doc in faiss_docs + bm25_docs:
-                if doc.page_content not in seen:
-                    seen[doc.page_content] = doc
+                text_val = _extract_content(doc)
+                if text_val not in seen:
+                    seen[text_val] = doc
 
             combined_docs = list(seen.values())
             
@@ -149,8 +170,8 @@ class FAQRetriever:
                 return "I do not have that information in my knowledge base."
                 
             if self.reranker:
-                MIN_SCORE = 0.3
-                pairs = [[query, doc.page_content] for doc in combined_docs]
+                MIN_SCORE = 0.25
+                pairs = [[query, _extract_content(d)] for d in combined_docs]
                 scores = self.reranker.predict(pairs)
                 
                 doc_scores = list(zip(combined_docs, scores))
@@ -163,14 +184,16 @@ class FAQRetriever:
                     
                 results = []
                 for doc in best_docs:
-                    source = doc.metadata.get("source_file", "unknown")
-                    results.append(f"[Source: {source}]\n{doc.page_content}")
+                    source = _extract_source(doc)
+                    content = _extract_content(doc)
+                    results.append(f"[Source: {source}]\n{content}")
                 return "\n\n---\n\n".join(results)
             else:
                 results = []
                 for doc in combined_docs[:top_k]:
-                    source = doc.metadata.get("source_file", "unknown")
-                    results.append(f"[Source: {source}]\n{doc.page_content}")
+                    source = _extract_source(doc)
+                    content = _extract_content(doc)
+                    results.append(f"[Source: {source}]\n{content}")
                 return "\n\n---\n\n".join(results)
             
         except Exception as e:

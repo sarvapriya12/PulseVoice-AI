@@ -9,7 +9,11 @@
 apps/voice-server/local_model/*.onnx
 apps/voice-server/local_model/*.bin
 apps/voice-server/local_model/huggingface_cache/
+apps/voice-server/data/models/
 local_model/
+*.tar.bz2
+*.tar.gz
+artifacts/
 
 # Virtual Environments
 voice_ai_env/

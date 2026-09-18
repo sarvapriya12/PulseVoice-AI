@@ -53,14 +53,31 @@ async def lifespan(app: FastAPI):
         raise
 
     # 3. Whisper — non-fatal
-    try:
-        _maybe_add_cuda_dll()
-        from faster_whisper import WhisperModel
-        _shared_whisper_model = WhisperModel("small.en", device="cuda", compute_type="float16")
-        _startup_status["whisper"] = True
-        print("[Whisper] Loaded on CUDA.")
-    except Exception as e:
-        print(f"[Whisper] Degraded — will fall back per-connection: {e}")
+    from core.config import settings
+    if getattr(settings, "STT_PROVIDER", "") == "whisper":
+        try:
+            _maybe_add_cuda_dll()
+            from faster_whisper import WhisperModel
+            _shared_whisper_model = WhisperModel("small.en", device="cuda", compute_type="float16")
+            _startup_status["whisper"] = True
+            print("[Whisper] Loaded on CUDA.")
+        except Exception as e:
+            print(f"[Whisper] CUDA unavailable ({e}); loading on CPU (int8)...")
+            try:
+                from faster_whisper import WhisperModel
+                from pathlib import Path
+                base_dir = Path(__file__).parent
+                hf_hub = base_dir / "local_model" / "huggingface_cache" / "hub" / "models--Systran--faster-whisper-small.en" / "snapshots"
+                model_path = "small.en"
+                if hf_hub.exists():
+                    snapshots = [d for d in hf_hub.iterdir() if d.is_dir()]
+                    if snapshots:
+                        model_path = str(snapshots[0])
+                _shared_whisper_model = WhisperModel(model_path, device="cpu", compute_type="int8")
+                _startup_status["whisper"] = True
+                print(f"[Whisper] Loaded on CPU (int8) from {model_path}.")
+            except Exception as e2:
+                print(f"[Whisper] Failed to load on CPU: {e2}")
 
     # 4. Kokoro — non-fatal
     try:
@@ -90,6 +107,60 @@ async def lifespan(app: FastAPI):
     import asyncio
     from services.waitlist_notifier import waitlist_cron_job
     cron_task = asyncio.create_task(waitlist_cron_job())
+
+    # 7. Pre-warm / Synthetic Queries to Eliminate Cold Starts
+    print("[STARTUP] Executing synthetic warmups to eliminate cold starts...")
+    import numpy as np
+    
+    async def _warmup_all():
+        # Warmup LLM / OpenRouter (DNS, TLS Handshake, Edge Cache)
+        try:
+            from services.langgraph_agent.nodes import get_llm_with_tools
+            from langchain_core.messages import SystemMessage
+            llm = get_llm_with_tools()
+            await llm.ainvoke([SystemMessage(content="ping")])
+            print("[STARTUP] LLM (OpenRouter) warmup complete.")
+        except Exception as e:
+            print(f"[STARTUP] LLM warmup failed: {e}")
+            
+        # Warmup Whisper CUDA Kernels
+        if _startup_status["whisper"] and _shared_whisper_model:
+            try:
+                # 0.5s of silent float32 audio
+                dummy_audio = np.zeros(16000 // 2, dtype=np.float32)
+                await asyncio.to_thread(_shared_whisper_model.transcribe, dummy_audio)
+                print("[STARTUP] Whisper (CUDA) warmup complete.")
+            except Exception as e:
+                print(f"[STARTUP] Whisper warmup failed: {e}")
+                
+        # Warmup Kokoro TTS ONNX Runtime
+        if _startup_status["kokoro"] and _shared_kokoro_model:
+            try:
+                # generate a short stream to initialize allocator
+                stream = _shared_kokoro_model.create_stream("ping", voice="af_sarah", speed=1.0)
+                async def _consume(s):
+                    async for _ in s:
+                        pass
+                asyncio.create_task(_consume(stream))
+                print("[STARTUP] Kokoro TTS (ONNX) warmup complete.")
+            except Exception as e:
+                print(f"[STARTUP] Kokoro warmup failed: {e}")
+                
+        # Warmup Sherpa-ONNX / Parakeet
+        from core.config import settings
+        if getattr(settings, "STT_PROVIDER", "") == "sherpa_onnx":
+            try:
+                from services.pipecat_pipeline.sherpa_onnx_stt import SherpaOnnxSTTService
+                _ = SherpaOnnxSTTService(
+                    model_dir=settings.SHERPA_ONNX_MODEL_PATH,
+                    provider=settings.PARAKEET_PROVIDER.strip() or None,
+                    num_threads=settings.PARAKEET_NUM_THREADS or None,
+                )
+                print("[STARTUP] Sherpa-ONNX Parakeet warmup complete.")
+            except Exception as e:
+                print(f"[STARTUP] Sherpa-ONNX warmup failed: {e}")
+
+    await _warmup_all()
 
     print(f"[STARTUP] Status: {_startup_status}")
     yield

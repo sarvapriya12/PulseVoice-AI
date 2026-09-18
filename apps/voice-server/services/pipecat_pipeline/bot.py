@@ -14,6 +14,7 @@ import base64
 from contextlib import AsyncExitStack
 
 import aiohttp
+import numpy as np
 
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import WorkerRunner
@@ -25,6 +26,8 @@ from pipecat.processors.audio.vad_processor import VADProcessor
 from pipecat.audio.vad.vad_analyzer import VADParams
 from pipecat.frames.frames import (
     UserStartedSpeakingFrame,
+    VADUserStartedSpeakingFrame,
+    InterruptionFrame,
     OutputTransportMessageFrame,
     TextFrame,
     LLMFullResponseStartFrame,
@@ -136,29 +139,87 @@ class AggressiveChunker:
         return [remainder] if remainder else []
 
 
+# ── Semantic Response Cache (Orchestration Layer Caching) ───────────────────
+# Uses embedding cosine similarity to match rephrased queries ("how fast you sprint" vs "how fast you run").
+class SemanticResponseCache:
+    def __init__(self, similarity_threshold: float = 0.90, max_size: int = 250):
+        self.similarity_threshold = similarity_threshold
+        self.max_size = max_size
+        self._entries: list[dict] = []  # [{query: str, embedding: np.ndarray, response: str}]
+
+    def _cosine_similarity(self, a: np.ndarray, b: np.ndarray) -> float:
+        dot = np.dot(a, b)
+        norm_a = np.linalg.norm(a)
+        norm_b = np.linalg.norm(b)
+        if norm_a == 0 or norm_b == 0:
+            return 0.0
+        return float(dot / (norm_a * norm_b))
+
+    def get(self, query: str, query_embedding: list[float] = None) -> tuple[str | None, float]:
+        if not self._entries or not query_embedding:
+            return None, 0.0
+        q_vec = np.array(query_embedding, dtype=np.float32)
+        best_score = -1.0
+        best_resp = None
+        for entry in self._entries:
+            sim = self._cosine_similarity(q_vec, entry["embedding"])
+            if sim > best_score:
+                best_score = sim
+                best_resp = entry["response"]
+        if best_score >= self.similarity_threshold:
+            return best_resp, best_score
+        return None, best_score
+
+    def put(self, query: str, query_embedding: list[float], response: str):
+        if not query_embedding or not response:
+            return
+        if len(self._entries) >= self.max_size:
+            self._entries.pop(0)
+        self._entries.append({
+            "query": query,
+            "embedding": np.array(query_embedding, dtype=np.float32),
+            "response": response
+        })
+
+_SEMANTIC_RESPONSE_CACHE = SemanticResponseCache(similarity_threshold=0.88)
+
+
+
 # ── LangGraph Adapter ────────────────────────────────────────────────────────
 
 class LangGraphAdapter(FrameProcessor):
     """Bridges Pipecat and LangGraph — receives transcribed text, returns AI response."""
 
-    def __init__(self, langgraph_app, call_sid: str, transport: FastAPIWebsocketTransport):
+    def __init__(self, langgraph_app, call_sid: str, transport: FastAPIWebsocketTransport, tavus_url: str = None, skip_greeting: bool = False, websocket=None):
         super().__init__()
         self.langgraph_app = langgraph_app
         self.call_sid = call_sid
         self.transport = transport
+        self.tavus_url = tavus_url
+        self.skip_greeting = skip_greeting
+        self.websocket = websocket
         self._buffer = []
         self._debounce_task = None
         self.was_interrupted = False
         self._chunker = None
+        # Speculative prefetch: start RAG on first interim transcript so results
+        # may already be warm by the time the final transcript arrives.
+        self._speculative_rag_task: asyncio.Task | None = None
+        self._speculative_rag_result = None
+
+    async def _send_transcript(self, msg: dict):
+        if getattr(self, "websocket", None):
+            try:
+                await self.websocket.send_json(msg)
+                return
+            except Exception:
+                pass
+        await self.push_frame(OutputTransportMessageFrame(msg))
 
     async def _process_final_transcript(self, text: str):
         try:
             print(f"[STT] Patient: {text}")
-            await self.push_frame(
-                OutputTransportMessageFrame(
-                    {"event": "transcript", "role": "user", "text": text, "isFinal": True}
-                )
-            )
+            await self._send_transcript({"event": "transcript", "role": "user", "text": text, "isFinal": True})
 
             text_lower = text.lower()
             is_emergency = any(w in text_lower for w in EMERGENCY_WORDS)
@@ -171,20 +232,66 @@ class LangGraphAdapter(FrameProcessor):
                 user_msg = f"[SYSTEM NOTE: You were cut off mid-sentence. Address their new input directly.]\n{text}"
                 self.was_interrupted = False
 
+            # Caching Layer 1: True Semantic Response Cache (Cosine Distance)
+            # Short-circuit semantically equivalent inquiries ("how fast you sprint" vs "how fast you run")
+            query_embedding = None
+            from services.langgraph_agent.nodes import rag_retriever
+            if rag_retriever and hasattr(rag_retriever, "embeddings"):
+                try:
+                    query_embedding = rag_retriever.embeddings.embed_query(text)
+                except Exception as e:
+                    print(f"[CACHE] Warning: could not embed query: {e}")
+
+            if not is_emergency and query_embedding:
+                cached_reply, score = _SEMANTIC_RESPONSE_CACHE.get(text, query_embedding)
+                if cached_reply:
+                    print(f"[SEMANTIC CACHE HIT] (score: {score:.3f}) Reusing reply for: '{text[:35]}'")
+                    await self._send_transcript({"event": "transcript", "role": "ai", "text": cached_reply, "isFinal": True})
+                    await self.push_frame(LLMFullResponseStartFrame())
+                    
+                    chunker = AggressiveChunker()
+                    # Feed words/tokens to trigger incremental yielding
+                    for word in cached_reply.split(' '):
+                        for sentence in chunker.feed(word + ' '):
+                            await self.push_frame(TextFrame(text=sentence))
+                            # Add a tiny sleep to let TTS start processing the first chunk
+                            await asyncio.sleep(0.01)
+                    
+                    # Flush the rest
+                    for sentence in chunker.drain():
+                        await self.push_frame(TextFrame(text=sentence))
+                        
+                    await self.push_frame(LLMFullResponseEndFrame())
+                    return
+
             # OPTIMIZATION 1: Fan-out RAG Prefetch and Filler
             from services.langgraph_agent.nodes import rag_retriever
-            import asyncio
-            
+
             async def _push_filler_task():
                 await self.push_frame(LLMFullResponseStartFrame())
                 if pending_filler:
                     await self.push_frame(TextFrame(text=pending_filler))
 
-            rag_task = asyncio.create_task(
-                asyncio.to_thread(rag_retriever.search_faq_docs, text)
-            ) if rag_retriever and not is_emergency else None
+            # Use the speculative RAG result if it completed while STT was running,
+            # otherwise kick off a fresh search now (in parallel with filler).
+            if self._speculative_rag_task is not None and self._speculative_rag_task.done():
+                try:
+                    speculative_docs = self._speculative_rag_task.result()
+                except Exception:
+                    speculative_docs = None
+                rag_task = None
+                print("[RAG SPECULATIVE] Reusing prefetched docs from interim transcript.")
+            else:
+                speculative_docs = None
+                rag_task = asyncio.create_task(
+                    asyncio.to_thread(rag_retriever.search_faq_docs, text)
+                ) if rag_retriever and not is_emergency else None
 
-            # If you add a guardrail later, you can add: guardrail_task = asyncio.create_task(_run_guardrail(text))
+            # Cancel any still-running speculative task now that we have the final text
+            if self._speculative_rag_task and not self._speculative_rag_task.done():
+                self._speculative_rag_task.cancel()
+            self._speculative_rag_task = None
+
             filler_task = asyncio.create_task(_push_filler_task())
 
             # Await them simultaneously — total wait = slowest one!
@@ -194,10 +301,14 @@ class LangGraphAdapter(FrameProcessor):
                 return_exceptions=True
             )
 
+            # If we used the speculative result, rag_docs is the dummy sleep return
+            if speculative_docs is not None:
+                rag_docs = speculative_docs
+
             if rag_docs and not isinstance(rag_docs, Exception):
-                context = " ".join([d.page_content for d in rag_docs[:3]])
+                context = " ".join([d.metadata.get("window_context", d.page_content) for d in rag_docs[:3]])
                 user_msg += f"\n\n[SYSTEM PREFETCHED FAQ CONTEXT (use if relevant, ignore if not)]: {context}"
-                print("[RAG PREFETCH] Injected FAQ context natively to bypass tool calls.")
+                print("[RAG PREFETCH] Injected sentence-window FAQ context natively to bypass tool calls.")
             elif isinstance(rag_docs, Exception):
                 print(f"[RAG PREFETCH] Error: {rag_docs}")
 
@@ -246,11 +357,7 @@ class LangGraphAdapter(FrameProcessor):
                 
                 if kind == "on_tool_end" and event["data"].get("output") == "__RESET_CONTEXT_SIGNAL__":
                     print("[AGENT] LLM invoked clear_memory tool — resetting context.")
-                    await self.push_frame(
-                        OutputTransportMessageFrame(
-                            {"event": "transcript", "role": "ai", "text": "*Context Reset*", "isFinal": True}
-                        )
-                    )
+                    await self._send_transcript({"event": "transcript", "role": "ai", "text": "*Context Reset*", "isFinal": True})
                     self.call_sid = str(uuid.uuid4())
                     await self.push_frame(LLMFullResponseEndFrame())
                     return
@@ -268,30 +375,51 @@ class LangGraphAdapter(FrameProcessor):
                         ui_tokens.append(refusal_text)
                         if self._chunker:
                             for sentence in self._chunker.feed(refusal_text):
-                                print(f"[CHUNKER] → TTS: {sentence!r}")
+                                safe_sentence = sentence.encode('ascii', 'replace').decode('ascii')
+                                print(f"[CHUNKER] -> TTS: {safe_sentence!r}")
                                 await self.push_frame(TextFrame(text=sentence))
 
                 if kind == "on_chat_model_stream" and event.get("name") == "agent_model":
                     chunk = event["data"]["chunk"]
-                    if getattr(chunk, "content", None) and not chunk.tool_calls:
-                        token = chunk.content
+                    raw_chunk_content = getattr(chunk, "content", None)
+                    if raw_chunk_content and not getattr(chunk, "tool_calls", None):
+                        if isinstance(raw_chunk_content, str):
+                            token = raw_chunk_content
+                        elif isinstance(raw_chunk_content, list):
+                            text_parts = []
+                            for part in raw_chunk_content:
+                                if isinstance(part, dict) and "text" in part:
+                                    text_parts.append(str(part["text"]))
+                                elif isinstance(part, str):
+                                    text_parts.append(part)
+                            token = "".join(text_parts)
+                        else:
+                            token = str(raw_chunk_content)
+
+                        if not token:
+                            continue
+
                         ui_tokens.append(token)
                         
-                        # Stream the text chunk directly to the UI immediately
-                        await self.push_frame(
-                            OutputTransportMessageFrame(
-                                {"event": "transcript", "role": "ai", "text": token, "isFinal": False}
-                            )
-                        )
+                        # Stream the text chunk directly to the UI immediately, bypassing TTS queue
+                        if self.websocket:
+                            try:
+                                await self.websocket.send_json({"event": "transcript", "role": "ai", "text": token, "isFinal": False})
+                            except Exception:
+                                pass
+                        else:
+                            await self._send_transcript({"event": "transcript", "role": "ai", "text": token, "isFinal": False})
 
                         if self._chunker:
                             for sentence in self._chunker.feed(token):
-                                print(f"[CHUNKER] → TTS: {sentence!r}")
+                                safe_sentence = sentence.encode('ascii', 'replace').decode('ascii')
+                                print(f"[CHUNKER] -> TTS: {safe_sentence!r}")
                                 await self.push_frame(TextFrame(text=sentence))
 
             if self._chunker:
                 for sentence in self._chunker.drain():
-                    print(f"[CHUNKER] final flush: {sentence!r}")
+                    safe_sentence = sentence.encode('ascii', 'replace').decode('ascii')
+                    print(f"[CHUNKER] final flush: {safe_sentence!r}")
                     await self.push_frame(TextFrame(text=sentence))
                 self._chunker = None
 
@@ -300,23 +428,23 @@ class LangGraphAdapter(FrameProcessor):
             if tool_names:
                 accumulated = f"{accumulated} [tools: {', '.join(tool_names)}]"
                 
-            print(f"[AGENT] Spoken: {accumulated}")
+            safe_accumulated = accumulated.encode('ascii', 'replace').decode('ascii')
+            print(f"[AGENT] Spoken: {safe_accumulated}")
             
-            await self.push_frame(
-                OutputTransportMessageFrame(
-                    {"event": "transcript", "role": "ai", "text": accumulated, "isFinal": True}
-                )
-            )
+            # Cache pure conversational replies (without tool invocations or emergency tags)
+            clean_reply = _CLEAN_UI.sub('', ''.join(ui_tokens)).strip()
+            if not tool_names and not is_emergency and clean_reply and len(clean_reply) > 4 and query_embedding:
+                _SEMANTIC_RESPONSE_CACHE.put(text, query_embedding, clean_reply)
+
+            await self._send_transcript({"event": "transcript", "role": "ai", "text": accumulated, "isFinal": True})
             await self.push_frame(LLMFullResponseEndFrame())
 
         except Exception as e:
+            import traceback
             self._chunker = None
             print(f"[ERROR] processing transcript: {e}")
-            await self.push_frame(
-                OutputTransportMessageFrame(
-                    {"event": "transcript", "role": "ai", "text": FALLBACK_TEXT, "isFinal": True}
-                )
-            )
+            traceback.print_exc()
+            await self._send_transcript({"event": "transcript", "role": "ai", "text": FALLBACK_TEXT, "isFinal": True})
             await self.push_frame(LLMFullResponseStartFrame())
             await self.push_frame(TextFrame(text=FALLBACK_TEXT))
             await self.push_frame(LLMFullResponseEndFrame())
@@ -345,41 +473,78 @@ class LangGraphAdapter(FrameProcessor):
                 # IMPORTANT: Push StartFrame downstream FIRST to initialize TTS and Output!
                 await self.push_frame(frame, direction)
                 
+                if self.skip_greeting:
+                    print(f"[PIPELINE] skip_greeting=True. Clean pipeline ready for caller input.")
+                    return
+
                 greeting = "Hello! I'm Sarah from Dr. Smith's clinic. How can I help you today?"
                 async def _send_greeting():
                     # Wait a tiny bit to ensure the downstream pipeline has processed the StartFrame
                     await asyncio.sleep(0.1)
-                    # Push transcript downstream (it will pass through TTS unmodified and reach transport)
-                    await self.push_frame(
-                        OutputTransportMessageFrame(
-                            {"event": "transcript", "role": "ai", "text": greeting, "isFinal": True}
+                    if getattr(self, "tavus_url", None):
+                        await self.push_frame(
+                            OutputTransportMessageFrame(
+                                {"event": "avatar_ready", "url": self.tavus_url}
+                            )
                         )
-                    )
+                    # Push transcript downstream
+                    await self._send_transcript({"event": "transcript", "role": "ai", "text": greeting, "isFinal": True})
                     from pipecat.frames.frames import LLMFullResponseStartFrame
-                    # Push text to TTS
+                    # Push as TWO separate sentences — each gets its own TTS call
+                    # so Kokoro renders them independently (no concatenation stutter).
                     await self.push_frame(LLMFullResponseStartFrame())
                     await self.push_frame(TextFrame(text="Hello! I'm Sarah from Dr. Smith's clinic."))
-                    await self.push_frame(TextFrame(text="How can I help you today?"))
+                    # Small yield to let Kokoro start processing the first sentence
+                    # before we enqueue the second. Prevents the aggregator from
+                    # merging them into one chunk with no space.
+                    await asyncio.sleep(0)
+                    await self.push_frame(TextFrame(text=" How can I help you today?"))
                     await self.push_frame(LLMFullResponseEndFrame())
                 
                 asyncio.create_task(_send_greeting())
                 return # We already pushed StartFrame
 
-            if isinstance(frame, UserStartedSpeakingFrame):
+            if isinstance(frame, (UserStartedSpeakingFrame, VADUserStartedSpeakingFrame)):
                 # Critical: When user starts speaking, instantly cancel any TTS generation!
                 await self.push_frame(InterruptionFrame())
+                await self.push_frame(OutputTransportMessageFrame({"event": "interruption"}))
                 if self._debounce_task and not self._debounce_task.done():
                     self._debounce_task.cancel()
                 self._chunker = None
                 self.was_interrupted = True
+                self._buffer.clear()
+                # Also cancel any in-flight speculative RAG from the previous turn
+                if self._speculative_rag_task and not self._speculative_rag_task.done():
+                    self._speculative_rag_task.cancel()
+                self._speculative_rag_task = None
+                self._speculative_rag_result = None
                 
             if isinstance(frame, InterimTranscriptionFrame):
                 # Push interim transcripts downstream through the pipeline
-                await self.push_frame(
-                    OutputTransportMessageFrame(
-                        {"event": "transcript", "role": "user", "text": frame.text, "isFinal": False}
-                    )
-                )
+                await self._send_transcript({"event": "transcript", "role": "user", "text": frame.text, "isFinal": False})
+
+                # Speculative RAG prefetch: fire a background search on the FIRST
+                # interim chunk. By the time the final transcript arrives ~0.5–1 s
+                # later, results are already in self._speculative_rag_result.
+                # We only launch one task per turn (skip if one is already running).
+                if (
+                    frame.text
+                    and self._speculative_rag_task is None
+                    and len(frame.text.split()) >= 3  # skip 1–2 word fragments
+                ):
+                    from services.langgraph_agent.nodes import rag_retriever
+                    if rag_retriever:
+                        async def _speculative_rag(query: str):
+                            try:
+                                import asyncio as _ai
+                                return await _ai.to_thread(
+                                    rag_retriever.search_faq_docs, query
+                                )
+                            except Exception:
+                                return None
+                        self._speculative_rag_task = asyncio.create_task(
+                            _speculative_rag(frame.text)
+                        )
                 return
 
             if isinstance(frame, TranscriptionFrame):
@@ -392,11 +557,14 @@ class LangGraphAdapter(FrameProcessor):
                 if self._debounce_task and not self._debounce_task.done():
                     self._debounce_task.cancel()
 
-                # Process the accumulated text after a 1.5s pause to prevent split sentences
+                # Process the accumulated text after a shorter pause to prevent split sentences
+                # 0.05 s debounce (was 0.1 s) — coalesce rapid STT chunks without
+                # adding noticeable delay. Parakeet rarely splits a single utterance
+                # into more than 1–2 chunks, so 50 ms is plenty.
                 async def _debounce():
                     try:
-                        print("[DEBOUNCE] Task started, sleeping for 0.3s...")
-                        await asyncio.sleep(0.3)
+                        print("[DEBOUNCE] Task started, sleeping for 0.05s...")
+                        await asyncio.sleep(0.05)
                         print(f"[DEBOUNCE] Woke up! Buffer size: {len(self._buffer)}")
                         full_text = " ".join(self._buffer).strip()
                         self._buffer.clear()
@@ -486,19 +654,103 @@ class SharedWhisperSTTService(WhisperSTTService):
             )
 
 class SharedKokoroTTSService(KokoroTTSService):
-    def _load(self):
-        from main import get_kokoro_model
-        model = get_kokoro_model()
-        if model is None:
-            print("[BOT] Fallback: Loading duplicate Kokoro model (main.py was not ready).")
-            super()._load()
-        else:
-            self._model = model
+    _AUDIO_CACHE: dict[str, list] = {}
+    _MAX_AUDIO_CACHE_SIZE: int = 150
 
+    def __init__(self, **kwargs):
+        from main import get_kokoro_model
+        from pipecat.services.tts_service import TTSService
+        from pipecat.audio.utils import create_stream_resampler
+        from pipecat.transcriptions.language import Language
+
+        shared_kokoro = get_kokoro_model()
+        if shared_kokoro is not None:
+            default_settings = self.Settings(
+                model=None,
+                voice=None,
+                language=Language.EN,
+            )
+            settings_arg = kwargs.pop("settings", None)
+            if settings_arg is not None:
+                default_settings.apply_update(settings_arg)
+
+            TTSService.__init__(
+                self,
+                push_start_frame=True,
+                push_stop_frames=True,
+                settings=default_settings,
+                **kwargs,
+            )
+            self._kokoro = shared_kokoro
+            self._resampler = create_stream_resampler()
+        else:
+            super().__init__(**kwargs)
+
+    from typing_extensions import override
+    from typing import AsyncGenerator
+    from pipecat.frames.frames import Frame
+
+    @override
+    async def run_tts(self, text: str, context_id: str = None, *args, **kwargs) -> AsyncGenerator[Frame, None]:
+        clean_key = text.strip().lower()
+        if clean_key in self._AUDIO_CACHE:
+            print(f"[CACHE HIT - TTS AUDIO] Reusing cached speech for: '{clean_key[:30]}'")
+            for frame in self._AUDIO_CACHE[clean_key]:
+                yield frame
+            return
+
+        buffered_frames = []
+        async for frame in super().run_tts(text, context_id, *args, **kwargs):
+            buffered_frames.append(frame)
+            yield frame
+
+        if buffered_frames and len(clean_key) < 120:
+            if len(self._AUDIO_CACHE) >= self._MAX_AUDIO_CACHE_SIZE:
+                self._AUDIO_CACHE.pop(next(iter(self._AUDIO_CACHE)))
+            self._AUDIO_CACHE[clean_key] = buffered_frames
+
+
+import httpx
+
+async def create_tavus_avatar_session(call_sid: str):
+    """
+    Creates a Tavus conversational avatar session.
+    Requires TAVUS_API_KEY in the environment.
+    """
+    persona_id = getattr(settings, "TAVUS_PERSONA_ID", "pd43ffef")
+    api_key = getattr(settings, "TAVUS_API_KEY", "")
+    
+    if not api_key:
+        print("[WARNING] TAVUS_API_KEY not set. Avatar will not be created.")
+        return None
+        
+    payload = {
+        "persona_id": persona_id,
+        "custom_greeting": "Hello! I'm Sarah from Dr. Smith's clinic. How can I help you today?",
+        "conversational_context": f"You are an AI assistant for the clinic. Session ID: {call_sid}"
+    }
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                "https://tavusapi.com/v2/conversations",
+                json=payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "x-api-key": api_key
+                }
+            )
+            response.raise_for_status()
+            data = response.json()
+            print(f"[TAVUS] Avatar session created: {data.get('conversation_id')}")
+            return data
+    except Exception as e:
+        print(f"[TAVUS ERROR] Failed to create avatar session: {e}")
+        return None
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
-async def run_bot(websocket, call_sid: str):
+async def run_bot(websocket, call_sid: str, skip_greeting: bool = False, input_sample_rate: int = 24000):
     """
     Runs the real-time audio pipeline over a WebSocket.
 
@@ -532,6 +784,16 @@ async def run_bot(websocket, call_sid: str):
                 device="cuda", # Blazing fast GPU inference
                 compute_type="float16"
             )
+        elif stt_provider == "sherpa_onnx":
+            from services.pipecat_pipeline.sherpa_onnx_stt import SherpaOnnxSTTService
+            # Pass provider/threads from config so PARAKEET_PROVIDER and
+            # PARAKEET_NUM_THREADS env vars are honoured without touching bot.py.
+            stt_service = SherpaOnnxSTTService(
+                model_dir=settings.SHERPA_ONNX_MODEL_PATH,
+                provider=settings.PARAKEET_PROVIDER.strip() or None,
+                num_threads=settings.PARAKEET_NUM_THREADS or None,
+            )
+
         else:
             from pipecat.services.deepgram.stt import DeepgramSTTService
             stt_service = DeepgramSTTService(
@@ -558,9 +820,19 @@ async def run_bot(websocket, call_sid: str):
                 settings=elevenlabs_tts_settings,
             )
         elif tts_provider == "kokoro":
+            from pipecat.services.tts_service import TextAggregationMode
             tts_service = SharedKokoroTTSService(
-                aggregate_sentences=False,
+                text_aggregation_mode=TextAggregationMode.TOKEN,
                 settings=KokoroTTSService.Settings(voice="af_heart")
+            )
+        elif tts_provider == "piper":
+            from pipecat.services.piper.tts import PiperTTSService
+            import pathlib
+            tts_service = PiperTTSService(
+                download_dir=str(pathlib.Path(__file__).parent.parent.parent / "data" / "models" / "piper"),
+                settings=PiperTTSService.Settings(
+                    voice=settings.TTS_VOICE or "en_US-lessac-medium"
+                )
             )
         else:
             from pipecat.services.deepgram.tts import DeepgramTTSService
@@ -571,6 +843,9 @@ async def run_bot(websocket, call_sid: str):
             )
 
         print(f"[BOT] New connection: call_sid={call_sid}")
+
+        tavus_session = await create_tavus_avatar_session(call_sid)
+        tavus_url = tavus_session.get("conversation_url") if tavus_session else None
 
         # ── Use the pre-built LangGraph app (built once at startup in main.py lifespan) ──
         # Avoid rebuilding the graph per connection — it's expensive and redundant.
@@ -586,12 +861,15 @@ async def run_bot(websocket, call_sid: str):
         from pipecat.serializers.twilio import TwilioFrameSerializer, FrameSerializer
 
         class DebugTwilioSerializer(FrameSerializer):
-            def __init__(self, stream_sid):
+            def __init__(self, stream_sid, default_sample_rate: int = 24000):
                 self.stream_sid = stream_sid
+                self.default_sample_rate = default_sample_rate
                 self.inner = TwilioFrameSerializer(
                     stream_sid=stream_sid,
                     params=TwilioFrameSerializer.InputParams(auto_hang_up=False)
                 )
+                from pipecat.audio.utils import create_stream_resampler
+                self._resampler = create_stream_resampler()
             
             async def setup(self, frame):
                 await self.inner.setup(frame)
@@ -613,13 +891,20 @@ async def run_bot(websocket, call_sid: str):
                 try:
                     if isinstance(data, (str, bytes)):
                         obj = json.loads(data)
+                        if obj.get("event") == "interruption":
+                            from pipecat.frames.frames import UserStartedSpeakingFrame
+                            return UserStartedSpeakingFrame()
                         if obj.get("event") == "chat" and "text" in obj:
                             from pipecat.frames.frames import TranscriptionFrame
                             return TranscriptionFrame(text=obj["text"], user_id="user", timestamp="")
                         if obj.get("event") == "media" and "payload" in obj.get("media", {}):
                             from pipecat.frames.frames import InputAudioRawFrame
                             audio_bytes = base64.b64decode(obj["media"]["payload"])
-                            return InputAudioRawFrame(audio=audio_bytes, sample_rate=24000, num_channels=1)
+                            media_obj = obj.get("media", {})
+                            sr = int(media_obj.get("sampleRate") or media_obj.get("sample_rate") or self.default_sample_rate)
+                            if sr == 24000:
+                                audio_bytes = await self._resampler.resample(audio_bytes, 24000, 16000)
+                            return InputAudioRawFrame(audio=audio_bytes, sample_rate=16000, num_channels=1)
                 except Exception:
                     pass
                 res = await self.inner.deserialize(data)
@@ -635,16 +920,19 @@ async def run_bot(websocket, call_sid: str):
                 audio_out_enabled=True,
                 add_wav_header=False,
                 audio_out_sample_rate=24000,
-                audio_in_sample_rate=24000,
-                serializer=DebugTwilioSerializer(stream_sid=call_sid),
+                audio_in_sample_rate=16000,
+                serializer=DebugTwilioSerializer(stream_sid=call_sid, default_sample_rate=input_sample_rate),
             ),
         )
 
+        # stop_secs=0.5: was 0.8 — cuts 300 ms dead time between user stopping
+        # and the STT endpoint firing. Silero VAD is reliable enough at 0.5 s;
+        # going below 0.4 s risks false endpoints on brief mid-sentence pauses.
         vad_processor = VADProcessor(
-            vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=0.8, confidence=0.3, min_volume=0.01))
+            vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=0.5, confidence=0.3, min_volume=0.01))
         )
 
-        adapter = LangGraphAdapter(langgraph_app, call_sid, transport)
+        adapter = LangGraphAdapter(langgraph_app, call_sid, transport, tavus_url=tavus_url, skip_greeting=skip_greeting, websocket=websocket)
 
         processors = [
             transport.input(),

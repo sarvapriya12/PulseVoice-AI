@@ -29,17 +29,17 @@ def main():
         
     # Extract unique file names from metadata
     loaded_files = set([doc.metadata.get("source_file", "Unknown") for doc in raw_docs])
-    print(f"\n📂 Successfully loaded {len(loaded_files)} document(s):")
+    print(f"\nSuccessfully loaded {len(loaded_files)} document(s):")
     for file_name in loaded_files:
         print(f"  - {file_name}")
     print()
         
-    print(f"Splitting {len(raw_docs)} document pages/sections into chunks...")
-    chunks = embedder.split_documents(raw_docs)
+    print(f"Splitting {len(raw_docs)} document pages/sections into sentence-window chunks...")
+    chunks = embedder.split_documents_sentence_window(raw_docs, window_size=1)
     
     print(f"Building FAISS index with {len(chunks)} chunks...")
     embedder.build_index(chunks, index_path=index_dir)
-    print(f"✅ RAG Index successfully built and saved to {index_dir}!")
+    print(f"[SUCCESS] RAG Index successfully built and saved to {index_dir}!")
 
 if __name__ == "__main__":
     main()

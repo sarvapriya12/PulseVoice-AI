@@ -113,23 +113,106 @@ tools = [
     clear_memory
 ] + rag_tools + twilio_tools
 
-def _build_llm(temperature: float = 0.7):
+def _build_model_candidates(temperature: float = 0.7):
+    """
+    Build prioritized list of LLM candidates for fallback resiliency.
+    Primary candidate is determined by settings.LLM_PROVIDER.
+    Secondary / tertiary candidates act as fallbacks if primary hits 429 rate limit or errors.
+    """
+    candidates = []
+
+    # Candidate 1: Groq
+    groq_llm = None
+    if settings.GROQ_API_KEY:
+        try:
+            from langchain_groq import ChatGroq
+            groq_model = settings.LLM_MODEL if settings.LLM_PROVIDER == "groq" else "openai/gpt-oss-20b"
+            groq_llm = ChatGroq(
+                api_key=settings.GROQ_API_KEY, 
+                model=groq_model, 
+                temperature=temperature,
+                max_retries=1
+            )
+        except Exception as e:
+            print(f"[LLM] Warning: Failed to init ChatGroq candidate: {e}")
+
+    # Candidate 2: Google Gemini
+    gemini_llm = None
+    if settings.GEMINI_API_KEY:
+        try:
+            from langchain_google_genai import ChatGoogleGenerativeAI
+            gemini_model = settings.LLM_MODEL if settings.LLM_PROVIDER == "google" else "gemini-3.6-flash"
+            gemini_llm = ChatGoogleGenerativeAI(
+                model=gemini_model,
+                google_api_key=settings.GEMINI_API_KEY,
+                temperature=temperature
+            )
+        except Exception as e:
+            print(f"[LLM] Warning: Failed to init ChatGoogleGenerativeAI candidate: {e}")
+
+    # Candidate 3: OpenRouter
+    openrouter_llm = None
+    if settings.OSS_API_KEY:
+        try:
+            from langchain_openai import ChatOpenAI
+            oss_model = settings.LLM_MODEL if settings.LLM_PROVIDER == "openai" else "openai/gpt-4o-mini"
+            openrouter_llm = ChatOpenAI(
+                api_key=settings.OSS_API_KEY,
+                base_url="https://openrouter.ai/api/v1",
+                model=oss_model,
+                temperature=temperature,
+                max_retries=2,
+                request_timeout=15.0
+            )
+        except Exception as e:
+            print(f"[LLM] Warning: Failed to init ChatOpenAI candidate: {e}")
+
+    # Order candidates according to settings.LLM_PROVIDER
     if settings.LLM_PROVIDER == "groq":
-        from langchain_groq import ChatGroq
-        return ChatGroq(api_key=settings.GROQ_API_KEY, model=settings.LLM_MODEL, temperature=temperature)
-    return ChatOpenAI(api_key=settings.OSS_API_KEY, base_url="https://openrouter.ai/api/v1", model=settings.LLM_MODEL, temperature=temperature)
+        for m in [groq_llm, gemini_llm, openrouter_llm]:
+            if m is not None:
+                candidates.append(m)
+    elif settings.LLM_PROVIDER == "google":
+        for m in [gemini_llm, groq_llm, openrouter_llm]:
+            if m is not None:
+                candidates.append(m)
+    elif settings.LLM_PROVIDER == "openai":
+        for m in [openrouter_llm, gemini_llm, groq_llm]:
+            if m is not None:
+                candidates.append(m)
+    else:
+        for m in [groq_llm, gemini_llm, openrouter_llm]:
+            if m is not None:
+                candidates.append(m)
+
+    if not candidates:
+        raise RuntimeError("No LLM providers available! Check GROQ_API_KEY, GEMINI_API_KEY, or OSS_API_KEY.")
+
+    return candidates
+
+def _build_llm(temperature: float = 0.7):
+    candidates = _build_model_candidates(temperature=temperature)
+    if len(candidates) == 1:
+        return candidates[0]
+    return candidates[0].with_fallbacks(candidates[1:])
 
 _llm_with_tools = None
 _guardrail_llm = None
 
 def get_llm_with_tools():
-    '''Build the configured LLM and bind the current tool list.'''
+    '''Build the configured LLM and bind the current tool list with multi-tier fallback support.'''
     global _llm_with_tools
     if _llm_with_tools is not None:
         return _llm_with_tools
-        
-    llm = _build_llm()
-    _llm_with_tools = llm.bind_tools(tools).with_config({"run_name": "agent_model"})
+
+    candidates = _build_model_candidates()
+    bound_candidates = [m.bind_tools(tools).with_config({"run_name": "agent_model"}) for m in candidates]
+
+    if len(bound_candidates) == 1:
+        _llm_with_tools = bound_candidates[0]
+    else:
+        _llm_with_tools = bound_candidates[0].with_fallbacks(bound_candidates[1:]).with_config({"run_name": "agent_model"})
+
     return _llm_with_tools
 
 
@@ -157,6 +240,17 @@ async def call_model(state: AgentState) -> dict:
 
     llm_with_tools = get_llm_with_tools()
     response = await llm_with_tools.ainvoke(messages)
+
+    # Normalize response.content if returned as a list of dicts (e.g. Gemini multimodal/text blocks)
+    if isinstance(response.content, list) and not getattr(response, "tool_calls", None):
+        text_parts = []
+        for part in response.content:
+            if isinstance(part, dict) and "text" in part:
+                text_parts.append(str(part["text"]))
+            elif isinstance(part, str):
+                text_parts.append(part)
+        if text_parts:
+            response.content = "".join(text_parts)
 
     return {"messages": [response]}
 
@@ -194,7 +288,13 @@ async def guardrail_node(state: AgentState) -> dict:
     try:
         invoke_messages = [SystemMessage(content=prompt)] + state["messages"][-4:]
         response = await _guardrail_llm.ainvoke(invoke_messages)
-        content = response.content.upper()
+        raw_content = response.content
+        if isinstance(raw_content, list):
+            text_parts = [p.get("text", "") if isinstance(p, dict) else str(p) for p in raw_content]
+            content = "".join(text_parts).upper()
+        else:
+            content = str(raw_content).upper()
+
         if "NO" in content and "YES" not in content:
             print(f"[GUARDRAIL] Intercepted off-topic message: {last_message.content}")
             return {"intent": "off_topic"}

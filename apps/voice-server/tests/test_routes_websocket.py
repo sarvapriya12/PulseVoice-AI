@@ -1,6 +1,7 @@
 import pytest
 from unittest.mock import patch, AsyncMock
 from fastapi.testclient import TestClient
+TestClient.__test__ = False
 from fastapi import WebSocketDisconnect
 from core.config import settings
 
