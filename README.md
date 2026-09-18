@@ -1,4 +1,4 @@
-# Clinic AI Voice Receptionist & Triage Agent
+# PulseVoice AI — Clinical Voice Receptionist & Triage Agent
 
 > **Enterprise-Grade, Ultra-Low Latency Clinical Voice Assistant**  
 > Powered by **FastAPI**, **Pipecat**, **Faster-Whisper (CUDA)**, **LangGraph Orchestrator**, **Multi-Tier LLM Resiliency (Groq → Gemini → OpenRouter)**, **Hybrid RAG (FAISS + BM25 + BGE Reranker)**, and **Kokoro-82M ONNX TTS**.
@@ -9,7 +9,7 @@
 
 ## 1. System Overview
 
-Clinic AI Voice Agent is a production-grade, real-time voice receptionist and clinical triage system engineered to handle patient phone and web calls with sub-second perceived conversational latency. Designed specifically for outpatient medical practices, surgical clinics, and urgent care triage, the system provides natural human-like voice conversations, grounded clinic knowledge retrieval, deterministic appointment scheduling, waitlist automation, and safety-critical emergency escalation.
+**PulseVoice AI** is a production-grade, real-time voice receptionist and clinical triage system engineered to handle patient phone and web calls with sub-second perceived conversational latency. Designed specifically for outpatient medical practices, surgical clinics, and urgent care triage, the system provides natural human-like voice conversations, grounded clinic knowledge retrieval, deterministic appointment scheduling, waitlist automation, and safety-critical emergency escalation.
 
 ### Key Architectural Highlights
 - **Bidirectional 24 kHz WebSocket Audio**: Native full-band 24 kHz voice synthesis and live audio streaming with client-side audio capture.
@@ -99,7 +99,7 @@ Clinic AI Voice Agent is a production-grade, real-time voice receptionist and cl
 
 ## 3. Multi-Tier LLM Resiliency Engine
 
-Medical voice applications cannot afford API timeouts or 429 rate limits. Clinic AI implements a deterministic, multi-tier fallback architecture via LangChain's `.with_fallbacks()` mechanism:
+Medical voice applications cannot afford API timeouts or 429 rate limits. PulseVoice AI implements a deterministic, multi-tier fallback architecture via LangChain's `.with_fallbacks()` mechanism:
 
 ```mermaid
 flowchart TD

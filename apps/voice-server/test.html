@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8"/>
 <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
-<title>AeroVoice AI | High-Precision Audio Engine</title>
+<title>PulseVoice AI | High-Precision Audio Engine</title>
 <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&amp;family=Geist:wght@300;400;500;600;700&amp;family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
 <script id="tailwind-config">
@@ -105,7 +105,7 @@
 <!-- Navigation -->
 <nav class="fixed top-0 w-full z-50 bg-background/60 backdrop-blur-md">
     <div class="flex justify-between items-center h-24 px-gutter max-w-container-max mx-auto">
-        <div class="font-display text-body-lg text-on-surface tracking-tight">AeroVoice AI</div>
+        <div class="font-display text-body-lg text-on-surface tracking-tight">PulseVoice AI</div>
         <div class="hidden md:flex gap-xl">
             <a class="text-on-surface-variant hover:text-on-surface transition-colors text-sm" href="#showcase">Showcase</a>
             <a class="text-on-surface-variant hover:text-on-surface transition-colors text-sm" href="#technology">Technology</a>
@@ -140,7 +140,7 @@
             YOUR VERY OWN PERSONAL<br/><span class="italic text-gradient">ASSISTANT</span>
         </h1>
         <p class="font-body-lg text-body-lg text-outline mb-xl max-w-2xl mx-auto">
-            AeroVoice delivers low latency medical support with high fidelity audio processing.
+            PulseVoice delivers low latency medical support with high fidelity audio processing.
         </p>
         <div class="flex flex-col sm:flex-row gap-lg justify-center items-center">
             <button class="btn-connect px-xl py-md bg-on-surface text-background text-body-md rounded-full hover:scale-105 transition-transform flex items-center gap-sm">
@@ -216,7 +216,7 @@
         <div class="flex flex-col md:flex-row justify-between items-end mb-lg gap-md border-b border-outline-variant/20 pb-sm">
             <div>
                 <h2 class="font-headline-md text-[24px] text-on-surface leading-none">Document Manager</h2>
-                <p class="text-outline text-xs mt-xs">Aero Brain Context</p>
+                <p class="text-outline text-xs mt-xs">PulseVoice Brain Context</p>
             </div>
             <div class="flex gap-md">
                 <input type="file" id="pdf-upload" accept=".pdf,.txt,.md,.docx" style="display:none">
@@ -514,7 +514,7 @@ function addBubble(role, text, isFinal = true) {
             currentAiBubble = document.createElement('div');
             currentAiBubble.className = "max-w-[80%] mr-auto border-l-2 border-primary pl-4 mb-2";
             currentAiBubble.innerHTML = `
-                <p class="text-[10px] font-label-md text-primary mb-1 uppercase tracking-widest">AeroVoice AI</p>
+                <p class="text-[10px] font-label-md text-primary mb-1 uppercase tracking-widest">PulseVoice AI</p>
                 <p class="text-body-lg text-on-surface leading-relaxed ai-text-content"></p>
             `;
             transcriptBox.appendChild(currentAiBubble);
